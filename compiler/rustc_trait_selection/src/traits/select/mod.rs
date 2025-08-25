@@ -9,9 +9,10 @@ use std::fmt::{self, Display};
 use std::ops::ControlFlow;
 
 use hir::def::DefKind;
-use rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
+use rustc_data_structures::fx::{FxHashMap, FxIndexMap, FxIndexSet};
 use rustc_data_structures::stack::ensure_sufficient_stack;
 use rustc_errors::{Diag, EmissionGuarantee};
+use rustc_hash::FxBuildHasher;
 use rustc_hir as hir;
 use rustc_hir::LangItem;
 use rustc_hir::def_id::DefId;
@@ -121,6 +122,8 @@ pub struct SelectionContext<'cx, 'tcx> {
     /// policy. In essence, canonicalized queries need their errors propagated
     /// rather than immediately reported because we do not have accurate spans.
     query_mode: TraitQueryMode,
+
+    predicates_cache: FxHashMap<PredicateObligation<'tcx>, EvaluationResult>,
 }
 
 // A stack that walks back up the stack frame.
@@ -196,6 +199,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             freshener: infcx.freshener(),
             intercrate_ambiguity_causes: None,
             query_mode: TraitQueryMode::Standard,
+            predicates_cache: FxHashMap::with_hasher(FxBuildHasher),
         }
     }
 
@@ -597,11 +601,15 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             None => self.check_recursion_limit(&obligation, &obligation)?,
         }
 
+        if let Some(evaluation_result) = self.predicates_cache.get(&obligation) {
+            return Ok(evaluation_result.clone());
+        }
+
         if sizedness_fast_path(self.tcx(), obligation.predicate, obligation.param_env) {
             return Ok(EvaluatedToOk);
         }
 
-        ensure_sufficient_stack(|| {
+        let evaluation_result = ensure_sufficient_stack(|| {
             let bound_predicate = obligation.predicate.kind();
             match bound_predicate.skip_binder() {
                 ty::PredicateKind::Clause(ty::ClauseKind::Trait(t)) => {
@@ -998,7 +1006,13 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                     }
                 }
             }
-        })
+        });
+
+        if let Ok(evaluation_result) = evaluation_result {
+            self.predicates_cache.insert(obligation, evaluation_result);
+        }
+
+        evaluation_result
     }
 
     #[instrument(skip(self, previous_stack), level = "debug", ret)]

@@ -4683,6 +4683,7 @@ name = "rustc_trait_selection"
 version = "0.0.0"
 dependencies = [
  "itertools",
+ "rustc-hash 2.1.1",
  "rustc_abi",
  "rustc_ast",
  "rustc_data_structures",
